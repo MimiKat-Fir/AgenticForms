@@ -1,0 +1,40 @@
+{
+  "profile": {
+    "FIRST_NAME": "Your first name",
+    "LAST_NAME": "Your last name",
+    "CURRENT_CITY": "Your city",
+    "COUNTRY_OF_RESIDENCE": "Your country",
+    "EMAIL": "MANUAL_REQUIRED",
+    "PHONE": "MANUAL_REQUIRED",
+    "DATE_OF_BIRTH": "MANUAL_REQUIRED",
+    "GENDER": "MANUAL_REQUIRED",
+    "ENGLISH_LEVEL": "MANUAL_REQUIRED",
+    "SOCIAL_PROFILE": "MANUAL_REQUIRED",
+    "DIETARY_MEDICAL_TRAVEL_REQUIREMENTS": "MANUAL_REQUIRED"
+  },
+  "directQuestionMap": {
+    "first name": "FIRST_NAME",
+    "last name": "LAST_NAME",
+    "email": "EMAIL",
+    "phone": "PHONE",
+    "date of birth": "DATE_OF_BIRTH",
+    "gender": "GENDER",
+    "city": "CURRENT_CITY"
+  },
+  "commonAnswers": {
+    "motivation_general": "MANUAL_REQUIRED",
+    "erasmus_experience": "MANUAL_REQUIRED",
+    "contribution": "MANUAL_REQUIRED",
+    "outcomes": "MANUAL_REQUIRED",
+    "learn_general": "MANUAL_REQUIRED",
+    "source": "MANUAL_REQUIRED",
+    "participation_fee": "MANUAL_REQUIRED",
+    "gdpr": "MANUAL_REQUIRED"
+  },
+  "referenceAnswers": {},
+  "styleRules": [
+    "Write in simple, natural English.",
+    "Do not invent personal facts.",
+    "Use MANUAL_REQUIRED for sensitive or uncertain fields."
+  ]
+}

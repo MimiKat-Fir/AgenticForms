@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+
+# Local API keys and private fill data.
+config.local.json
+api/*
+!api/.gitignore
+local_data/common_answers_erasmus.json
+local_data/*/common_answers.json
+profiles/profile_erasmus.md
+profiles/ai_profile_erasmus.md
+profiles/*/private_profile.md
+profiles/*/ai_profile.md
+profiles/*/common_answers.json
