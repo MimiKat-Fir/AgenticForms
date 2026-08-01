@@ -1,6 +1,6 @@
-# AgenticForms
+# Formizzy
 
-Local Google Forms assistant. It drafts answers locally or through a localhost AI server, fills known fields, marks unknown fields for manual review, and never submits the form.
+Make it easy: local Google Forms assistant. It drafts answers locally or through a localhost AI server, fills known fields, marks unknown fields for manual review, and never submits the form.
 
 ## Flow
 
@@ -17,7 +17,7 @@ Google Form
 
 ```powershell
 cd "path\to\AgenticForms"
-python local_forms_ai_server.py
+& "$env:USERPROFILE\miniconda3\python.exe" local_forms_ai_server.py
 ```
 
 Status:

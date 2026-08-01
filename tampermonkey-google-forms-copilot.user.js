@@ -1,9 +1,13 @@
 // ==UserScript==
-// @name         Google Forms Local Copilot
+// @name         Formizzy
 // @namespace    https://local-only.google-forms-copilot/
-// @version      0.4.8
-// @description  Local review-first helper to draft and fill Google Forms answers through localhost. Never submits forms.
-// @author       AgenticForms
+// @version      0.4.19
+// @description  Make it easy: local review-first helper to draft and fill Google Forms answers through localhost. Never submits forms.
+// @author       MimiKat-Fir
+// @homepageURL  https://github.com/MimiKat-Fir/AgenticForms
+// @supportURL   https://github.com/MimiKat-Fir/AgenticForms/issues
+// @downloadURL  http://127.0.0.1:8792/tampermonkey-google-forms-copilot.user.js
+// @updateURL    http://127.0.0.1:8792/tampermonkey-google-forms-copilot.user.js
 // @match        https://docs.google.com/forms/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
@@ -18,6 +22,7 @@
 
     const APP_ID = 'gfc-local-copilot';
     const MANUAL_REQUIRED = 'MANUAL_REQUIRED';
+    const SCRIPT_VERSION = '0.4.19';
     const LOCAL_BASE_URL = 'http://127.0.0.1:8799';
     const LOCAL_SERVER_URL = `${LOCAL_BASE_URL}/generate-answers`;
     const LOCAL_PREVIEW_URL = `${LOCAL_BASE_URL}/preview-local`;
@@ -26,7 +31,7 @@
         activeProfile: 'erasmus',
         provider: 'auto'
     };
-    const START_SERVER_COMMAND = 'cd "path\\to\\AgenticForms"\npython local_forms_ai_server.py';
+    const START_SERVER_COMMAND = 'cd "path\\to\\AgenticForms"\n& "$env:USERPROFILE\\miniconda3\\python.exe" local_forms_ai_server.py';
 
     const SELECTORS = {
         questionContainers: [
@@ -324,9 +329,14 @@
             const responseLocalCount = Number(response.localAnsweredCount) || localCount;
             const responseApiCount = Number(response.apiQuestionCount) || apiCount;
             const responseLockedCount = Number(response.lockedManualCount) || lockedCount;
+            const providerIssue = providerIssueMessage(response);
+            if (providerIssue) {
+                updateProgress('Filling Google Form...', providerIssue, 50);
+                setStatus(providerIssue, 'warn');
+            }
             updateProgress(
                 'Filling Google Form...',
-                `Answers ready: ${responseLocalCount} local, ${responseApiCount} API, ${responseLockedCount} manual locked. Filling fields...`,
+                providerIssue || `Answers ready: ${responseLocalCount} local, ${responseApiCount} API, ${responseLockedCount} manual locked. Filling fields...`,
                 58
             );
             setTextareaValue('answers', JSON.stringify(response.answers, null, 2));
@@ -663,6 +673,18 @@
         el.dataset.level = level || 'info';
     }
 
+    function providerIssueMessage(response) {
+        if (!response || !response.aiUnavailableFallback) return '';
+        const provider = response.providerError && response.providerError.provider ? response.providerError.provider : 'AI provider';
+        const rawStatus = response.providerError && response.providerError.status;
+        const failedCount = Array.isArray(response.apiQuestionsFailed) ? response.apiQuestionsFailed.length : Number(response.apiQuestionCount) || 0;
+        if (rawStatus === 'invalid_response') {
+            return `${provider} returned an invalid response. Filled local answers only; ${failedCount} API question(s) need manual review this time.`;
+        }
+        const status = rawStatus ? ` HTTP ${rawStatus}` : '';
+        return `${provider}${status} is unavailable or overloaded. Filled local answers only; ${failedCount} API question(s) need manual review this time.`;
+    }
+
     function clearQuestionMark(container) {
         if (!container) return;
         container.removeAttribute('data-gfc-status');
@@ -677,6 +699,13 @@
         const el = document.getElementById(`${APP_ID}-report`);
         if (!el) return;
         el.textContent = JSON.stringify(report, null, 2);
+    }
+
+    function copyReport() {
+        const report = document.getElementById(`${APP_ID}-report`);
+        if (!report) return;
+        const copied = copyText(report.textContent || '{}');
+        setStatus(copied ? 'Last fill report copied to clipboard.' : 'Clipboard permission is unavailable. Select and copy the report manually.', copied ? 'ok' : 'warn');
     }
 
     function showProgress(title, detail, percent) {
@@ -879,10 +908,10 @@
 
         const panel = document.createElement('section');
         panel.id = APP_ID;
-        panel.setAttribute('aria-label', 'Google Forms Local Copilot');
+        panel.setAttribute('aria-label', 'Formizzy');
 
         const title = document.createElement('h2');
-        title.textContent = 'Forms Copilot Config';
+        title.textContent = `Formizzy Config v${SCRIPT_VERSION}`;
 
         const form = document.createElement('div');
         form.className = 'gfc-config-grid';
@@ -923,6 +952,9 @@
         health.id = `${APP_ID}-health`;
         health.textContent = 'Not checked yet.';
 
+        const reportHeader = document.createElement('div');
+        reportHeader.className = 'gfc-report-header';
+
         const reportLabel = document.createElement('label');
         reportLabel.textContent = 'Last fill report';
         reportLabel.htmlFor = `${APP_ID}-report`;
@@ -930,6 +962,11 @@
         const report = document.createElement('pre');
         report.id = `${APP_ID}-report`;
         report.textContent = '{}';
+
+        const copyReportButton = createButton('Copy', copyReport);
+        copyReportButton.className = 'gfc-copy-report';
+        copyReportButton.title = 'Copy the report JSON to clipboard';
+        reportHeader.append(reportLabel, copyReportButton);
 
         const questions = document.createElement('textarea');
         questions.id = `${APP_ID}-questions`;
@@ -941,7 +978,7 @@
         answers.hidden = true;
         answers.spellcheck = false;
 
-        panel.append(title, form, status, healthLabel, health, reportLabel, report, questions, answers);
+        panel.append(title, form, status, healthLabel, health, reportHeader, report, questions, answers);
         document.body.appendChild(panel);
         addStyles();
         syncConfigFields(getLocalConfig());
@@ -981,7 +1018,7 @@
         const launcher = document.createElement('button');
         launcher.id = `${APP_ID}-launcher`;
         launcher.type = 'button';
-        launcher.title = 'Google Forms Copilot';
+        launcher.title = 'Formizzy - make it easy';
 
         const icon = document.createElement('img');
         icon.src = 'https://cdn-icons-png.flaticon.com/512/17113/17113805.png';
@@ -992,7 +1029,6 @@
         menu.id = `${APP_ID}-menu`;
         menu.append(
             createMenuItem('Fill form', fillFormAutomatically),
-            createMenuItem('Fill local only', fillFormLocalOnly),
             createMenuItem('Open panel', openPanel),
             createMenuItem('Clear Marks', clearPanel)
         );
@@ -1090,6 +1126,23 @@
                 color: #57606a;
                 font-size: 12px;
                 line-height: 1.35;
+            }
+            #${APP_ID} .gfc-report-header {
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                gap: 8px;
+                margin-top: 10px;
+            }
+            #${APP_ID} .gfc-report-header label {
+                margin: 0;
+            }
+            #${APP_ID} .gfc-copy-report {
+                min-height: 25px;
+                padding: 3px 7px;
+                border-radius: 5px;
+                font-size: 11px;
+                white-space: nowrap;
             }
             #${APP_ID} .gfc-buttons {
                 display: grid;
@@ -1309,7 +1362,7 @@
         overlay.addEventListener('click', closePanel);
         document.body.appendChild(overlay);
         addLauncher();
-        console.info('Google Forms Local Copilot loaded. It never submits forms. Localhost drafting requires local_forms_ai_server.py.');
+        console.info('Formizzy loaded. It never submits forms. Localhost drafting requires local_forms_ai_server.py.');
     }
 
     if (document.readyState === 'loading') {
