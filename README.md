@@ -1,11 +1,11 @@
 # Formizzy
 
-Make it easy: local Google Forms assistant. It drafts answers locally or through a localhost AI server, fills known fields, marks unknown fields for manual review, and never submits the form.
+Make it easy: local Google Forms and Tally assistant. It drafts answers locally or through a localhost AI server, fills known fields, marks unknown fields for manual review, and never submits the form.
 
 ## Flow
 
 ```text
-Google Form
+Google Form or Tally form
 -> Tampermonkey userscript
 -> http://127.0.0.1:8799
 -> local rules or filtered Gemini/OpenAI prompt
@@ -39,6 +39,11 @@ The floating icon has three actions:
 - `Fill form`: extracts visible questions, asks localhost for answers using the selected config, fills confident answers, and marks manual/unresolved fields.
 - `Open panel`: choose profile, answer engine, privacy mode, and check localhost status.
 - `Clear`: clears visual marks and local temporary text.
+
+## Supported Sites
+
+- Google Forms: supported.
+- Tally (`tally.so`): supported for visible text fields, paragraphs, radios, checkboxes, and dropdowns when their options are available. File uploads remain manual.
 
 ## Files
 

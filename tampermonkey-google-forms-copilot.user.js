@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Formizzy
 // @namespace    https://local-only.google-forms-copilot/
-// @version      0.4.19
-// @description  Make it easy: local review-first helper to draft and fill Google Forms answers through localhost. Never submits forms.
+// @version      0.5.1
+// @description  Make it easy: local review-first helper for Google Forms and Tally. Never submits forms.
 // @author       MimiKat-Fir
 // @homepageURL  https://github.com/MimiKat-Fir/AgenticForms
 // @supportURL   https://github.com/MimiKat-Fir/AgenticForms/issues
 // @downloadURL  http://127.0.0.1:8792/tampermonkey-google-forms-copilot.user.js
 // @updateURL    http://127.0.0.1:8792/tampermonkey-google-forms-copilot.user.js
 // @match        https://docs.google.com/forms/*
+// @match        https://tally.so/*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
@@ -22,7 +23,7 @@
 
     const APP_ID = 'gfc-local-copilot';
     const MANUAL_REQUIRED = 'MANUAL_REQUIRED';
-    const SCRIPT_VERSION = '0.4.19';
+    const SCRIPT_VERSION = '0.5.1';
     const LOCAL_BASE_URL = 'http://127.0.0.1:8799';
     const LOCAL_SERVER_URL = `${LOCAL_BASE_URL}/generate-answers`;
     const LOCAL_PREVIEW_URL = `${LOCAL_BASE_URL}/preview-local`;
@@ -33,7 +34,7 @@
     };
     const START_SERVER_COMMAND = 'cd "path\\to\\AgenticForms"\n& "$env:USERPROFILE\\miniconda3\\python.exe" local_forms_ai_server.py';
 
-    const SELECTORS = {
+    const GOOGLE_SELECTORS = {
         questionContainers: [
             '.Qr7Oae',
             '[role="listitem"]'
@@ -52,8 +53,32 @@
         dropdownOption: '[role="option"]'
     };
 
+    const TALLY_SELECTORS = {
+        title: ['h3[id^="label_"]'],
+        textInput: 'input[type="text"], input[type="email"], input[type="tel"], input[type="url"], input[type="number"], input:not([type])',
+        dateInput: 'input[type="date"], input[aria-haspopup="dialog"]',
+        textarea: 'textarea',
+        radio: 'input[type="radio"]',
+        checkbox: 'input[type="checkbox"]',
+        dropdownTrigger: 'input[role="combobox"]',
+        dropdownOption: '[role="option"]'
+    };
+
     let lastExtraction = null;
     let activeProgress = null;
+    let tallyQuestionMetadata = new WeakMap();
+
+    function isTallyForm() {
+        return location.hostname === 'tally.so' || location.hostname.endsWith('.tally.so');
+    }
+
+    function getSelectors() {
+        return isTallyForm() ? TALLY_SELECTORS : GOOGLE_SELECTORS;
+    }
+
+    function formPlatformName() {
+        return isTallyForm() ? 'Tally form' : 'Google Form';
+    }
 
     function normalizeText(value) {
         return String(value || '')
@@ -105,10 +130,12 @@
     }
 
     function getQuestionContainers() {
+        if (isTallyForm()) return getTallyQuestionContainers();
+
         const containers = [];
         const seen = new Set();
-        const containerSelector = SELECTORS.questionContainers.join(',');
-        for (const selector of SELECTORS.questionContainers) {
+        const containerSelector = GOOGLE_SELECTORS.questionContainers.join(',');
+        for (const selector of GOOGLE_SELECTORS.questionContainers) {
             document.querySelectorAll(selector).forEach((container) => {
                 if (seen.has(container) || !isVisible(container)) return;
                 const parentQuestion = container.parentElement ? container.parentElement.closest(containerSelector) : null;
@@ -123,8 +150,35 @@
         return containers;
     }
 
+    function getTallyQuestionContainers() {
+        tallyQuestionMetadata = new WeakMap();
+        const headings = Array.from(document.querySelectorAll('h3[id^="label_"]')).filter(isVisible);
+        const controls = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, select'));
+        const containers = [];
+        const seen = new Set();
+
+        headings.forEach((heading, index) => {
+            const nextHeading = headings[index + 1] || null;
+            const questionControls = controls.filter((control) => {
+                const afterHeading = Boolean(heading.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING);
+                const beforeNextHeading = !nextHeading || Boolean(control.compareDocumentPosition(nextHeading) & Node.DOCUMENT_POSITION_FOLLOWING);
+                const labelledForAnotherQuestion = control.getAttribute('aria-labelledby') && control.getAttribute('aria-labelledby') !== heading.id;
+                return afterHeading && beforeNextHeading && !labelledForAnotherQuestion;
+            });
+            if (!questionControls.length) return;
+
+            // Layout wrappers can contain several questions. The heading is the stable, unique identity.
+            if (seen.has(heading)) return;
+            seen.add(heading);
+            tallyQuestionMetadata.set(heading, { heading, controls: questionControls });
+            containers.push(heading);
+        });
+        return containers;
+    }
+
     function extractFormTitle() {
         const candidates = [
+            document.querySelector('h1'),
             document.querySelector('[role="heading"]'),
             document.querySelector('.F9yp7e'),
             document.querySelector('title')
@@ -137,7 +191,10 @@
     }
 
     function extractTitle(container) {
-        const titleElement = queryFirst(container, SELECTORS.title);
+        const tallyMetadata = tallyQuestionMetadata.get(container);
+        if (tallyMetadata) return normalizeText(tallyMetadata.heading.textContent);
+
+        const titleElement = queryFirst(container, getSelectors().title);
         if (titleElement) return normalizeText(titleElement.textContent);
 
         const labels = Array.from(container.querySelectorAll('[aria-label], [data-params]'))
@@ -147,6 +204,8 @@
     }
 
     function extractRequired(container, title) {
+        const tallyMetadata = tallyQuestionMetadata.get(container);
+        if (tallyMetadata && tallyMetadata.controls.some((control) => control.required || control.getAttribute('aria-required') === 'true')) return true;
         if (container.querySelector('[aria-required="true"], input[required], textarea[required]')) return true;
         const requiredText = Array.from(container.querySelectorAll('*'))
             .some((el) => normalizeText(el.textContent).toLowerCase() === '* required');
@@ -155,16 +214,30 @@
 
     function optionText(option) {
         const aria = option.getAttribute('aria-label') || option.getAttribute('data-value') || option.getAttribute('data-answer-value');
-        const text = getVisibleText(option);
+        const wrappingLabel = option.closest('label');
+        const linkedLabel = option.id
+            ? Array.from(document.querySelectorAll('label')).find((label) => label.htmlFor === option.id)
+            : null;
+        const text = getVisibleText(linkedLabel || wrappingLabel || option);
         return normalizeText(aria || text);
     }
 
     function extractOptions(container, selector) {
-        return unique(Array.from(container.querySelectorAll(selector)).map(optionText));
+        return unique(getQuestionElements(container, selector).map(optionText));
+    }
+
+    function getQuestionElements(container, selector) {
+        const tallyMetadata = tallyQuestionMetadata.get(container);
+        if (tallyMetadata) return tallyMetadata.controls.filter((control) => control.matches(selector));
+        return Array.from(container.querySelectorAll(selector));
+    }
+
+    function findQuestionElement(container, selector) {
+        return getQuestionElements(container, selector)[0] || null;
     }
 
     function inferInputSubtype(container) {
-        const input = container.querySelector('input');
+        const input = findQuestionElement(container, 'input');
         const title = normalizeKey(extractTitle(container));
         const inputType = input ? String(input.type || '').toLowerCase() : '';
         const autocomplete = input ? String(input.autocomplete || '').toLowerCase() : '';
@@ -177,12 +250,16 @@
     }
 
     function detectType(container) {
-        if (container.querySelector(SELECTORS.textarea)) return 'paragraph';
-        if (container.querySelector(SELECTORS.dateInput)) return 'date';
-        if (container.querySelector(SELECTORS.radio)) return 'radio';
-        if (container.querySelector(SELECTORS.checkbox)) return 'checkbox';
-        if (container.querySelector(SELECTORS.dropdownTrigger)) return 'dropdown';
-        if (container.querySelector('input')) return inferInputSubtype(container);
+        const selectors = getSelectors();
+        const input = findQuestionElement(container, 'input');
+        if (findQuestionElement(container, selectors.textarea)) return 'paragraph';
+        if (findQuestionElement(container, selectors.radio)) return 'radio';
+        if (findQuestionElement(container, selectors.checkbox)) return 'checkbox';
+        if (findQuestionElement(container, selectors.dateInput)) return 'date';
+        if (input && input.type === 'file') return 'file_upload';
+        if (input && inferInputSubtype(container) === 'date') return 'date';
+        if (input && input.matches(selectors.dropdownTrigger) && input.type !== 'tel') return 'dropdown';
+        if (input) return inferInputSubtype(container);
         if (/file upload/i.test(getVisibleText(container))) return 'file_upload';
         return 'unknown';
     }
@@ -194,9 +271,10 @@
             const type = detectType(container);
             let options = [];
 
-            if (type === 'radio') options = extractOptions(container, SELECTORS.radio);
-            if (type === 'checkbox') options = extractOptions(container, SELECTORS.checkbox);
-            if (type === 'dropdown') options = extractOptions(container, SELECTORS.dropdownOption);
+            const selectors = getSelectors();
+            if (type === 'radio') options = extractOptions(container, selectors.radio);
+            if (type === 'checkbox') options = extractOptions(container, selectors.checkbox);
+            if (type === 'dropdown') options = extractOptions(container, selectors.dropdownOption);
 
             return {
                 id: `q_${String(index + 1).padStart(3, '0')}`,
@@ -299,7 +377,7 @@
     }
 
     async function fillFormAutomatically(overrides = {}) {
-        showProgress('Filling Google Form...', 'Extracting visible questions...', 8);
+        showProgress(`Filling ${formPlatformName()}...`, 'Extracting visible questions...', 8);
         const extraction = extractQuestions();
         if (!extraction.questions.length) {
             finishProgress('No questions found.', 'warn');
@@ -308,7 +386,7 @@
             return;
         }
 
-        updateProgress('Filling Google Form...', `Extracted ${extraction.questions.length} question(s). Checking local answers...`, 22);
+        updateProgress(`Filling ${formPlatformName()}...`, `Extracted ${extraction.questions.length} question(s). Checking local answers...`, 22);
         setStatus('Extracted questions. Drafting answers through localhost...', 'info');
         try {
             const requestConfig = { ...getLocalConfig(), ...(overrides.config || {}) };
@@ -319,7 +397,7 @@
             const localPart = `${localCount} answered locally`;
             const lockedPart = lockedCount ? `, ${lockedCount} locked for manual review` : '';
             const apiPart = apiCount ? `, ${apiCount} sent to API. Waiting for API...` : ', no API call needed';
-            updateProgress('Filling Google Form...', `${localPart}${lockedPart}${apiPart}`, apiCount ? 38 : 46);
+            updateProgress(`Filling ${formPlatformName()}...`, `${localPart}${lockedPart}${apiPart}`, apiCount ? 38 : 46);
 
             const response = await localRequestJson(LOCAL_SERVER_URL, { extraction, config: requestConfig });
             if (!response.answers || typeof response.answers !== 'object' || Array.isArray(response.answers)) {
@@ -331,11 +409,11 @@
             const responseLockedCount = Number(response.lockedManualCount) || lockedCount;
             const providerIssue = providerIssueMessage(response);
             if (providerIssue) {
-                updateProgress('Filling Google Form...', providerIssue, 50);
+                updateProgress(`Filling ${formPlatformName()}...`, providerIssue, 50);
                 setStatus(providerIssue, 'warn');
             }
             updateProgress(
-                'Filling Google Form...',
+                `Filling ${formPlatformName()}...`,
                 providerIssue || `Answers ready: ${responseLocalCount} local, ${responseApiCount} API, ${responseLockedCount} manual locked. Filling fields...`,
                 58
             );
@@ -405,17 +483,17 @@
     }
 
     function getChoiceOptions(container, selector) {
-        return Array.from(container.querySelectorAll(selector))
-            .filter(isVisible)
+        return getQuestionElements(container, selector)
+            .filter((element) => isTallyForm() || isVisible(element))
             .map((element) => ({ element, label: optionText(element) }))
             .filter((option) => option.label);
     }
 
     function fillRadio(container, answer) {
-        const options = getChoiceOptions(container, SELECTORS.radio);
+        const options = getChoiceOptions(container, getSelectors().radio);
         const match = matchSingleOption(options, answer);
         if (!match.option) return { ok: false, reason: match.error || 'unresolved radio option' };
-        if (match.option.element.getAttribute('aria-checked') !== 'true') activateChoice(match.option.element);
+        if (match.option.element.getAttribute('aria-checked') !== 'true' && !match.option.element.checked) activateChoice(match.option.element);
         return { ok: true };
     }
 
@@ -431,14 +509,19 @@
     }
 
     function findGlobalCheckboxOption(value) {
-        const options = getChoiceOptions(document, SELECTORS.checkbox);
+        if (isTallyForm()) return null;
+        const options = getChoiceOptions(document, GOOGLE_SELECTORS.checkbox);
         const match = matchSingleOption(options, value);
         return match.option || null;
     }
 
     function fillCheckbox(container, answer) {
-        const values = splitAnswerValues(answer);
-        const options = getChoiceOptions(container, SELECTORS.checkbox);
+        const options = getChoiceOptions(container, getSelectors().checkbox);
+        // A single checkbox label may contain commas (for example, a GDPR statement).
+        // Preserve an exact full-label match before treating a string as multiple selections.
+        const values = Array.isArray(answer) || !matchSingleOption(options, answer).option
+            ? splitAnswerValues(answer)
+            : [String(answer)];
         const selected = [];
         const unresolved = [];
 
@@ -448,7 +531,7 @@
                 unresolved.push(`${value}: ${match.error || 'unresolved checkbox option'}`);
                 return;
             }
-            if (match.option.element.getAttribute('aria-checked') !== 'true') activateChoice(match.option.element);
+            if (match.option.element.getAttribute('aria-checked') !== 'true' && !match.option.element.checked) activateChoice(match.option.element);
             selected.push(value);
         });
 
@@ -461,7 +544,7 @@
                     stillUnresolved.push(item);
                     return;
                 }
-                if (globalOption.element.getAttribute('aria-checked') !== 'true') activateChoice(globalOption.element);
+                if (globalOption.element.getAttribute('aria-checked') !== 'true' && !globalOption.element.checked) activateChoice(globalOption.element);
                 selected.push(value);
             });
             if (stillUnresolved.length) return { ok: false, reason: stillUnresolved.join('; ') };
@@ -470,15 +553,16 @@
     }
 
     async function fillDropdown(container, answer) {
-        const trigger = container.querySelector(SELECTORS.dropdownTrigger);
+        const selectors = getSelectors();
+        const trigger = findQuestionElement(container, selectors.dropdownTrigger);
         if (!trigger) return { ok: false, reason: 'dropdown trigger not found' };
 
         trigger.click();
-        await delay(100);
+        await delay(isTallyForm() ? 250 : 100);
 
         const allOptions = unique([
-            ...extractOptions(container, SELECTORS.dropdownOption),
-            ...Array.from(document.querySelectorAll(SELECTORS.dropdownOption)).map(optionText)
+            ...extractOptions(container, selectors.dropdownOption),
+            ...Array.from(document.querySelectorAll(selectors.dropdownOption)).map(optionText)
         ]);
         const matches = allOptions.filter((label) => normalizeKey(label) === normalizeKey(answer));
         if (matches.length !== 1) {
@@ -486,14 +570,14 @@
             return { ok: false, reason: matches.length > 1 ? 'ambiguous dropdown option match' : 'no confident dropdown option match' };
         }
 
-        const optionElement = Array.from(document.querySelectorAll(SELECTORS.dropdownOption))
+        const optionElement = Array.from(document.querySelectorAll(selectors.dropdownOption))
             .find((option) => normalizeKey(optionText(option)) === normalizeKey(answer));
         if (!optionElement) {
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
             return { ok: false, reason: 'matching dropdown option was not visible after opening' };
         }
 
-        optionElement.click();
+        activateChoice(optionElement);
         return { ok: true };
     }
 
@@ -574,7 +658,7 @@
             if (options.progress) {
                 const processed = report.filled.length + report.skipped.length + report.manualRequired.length + report.unresolved.length + report.errors.length;
                 const percent = 58 + Math.round((processed / Math.max(questions.length, 1)) * 36);
-                updateProgress('Filling Google Form...', `Processing: ${question.title}`, percent);
+                updateProgress(`Filling ${formPlatformName()}...`, `Processing: ${question.title}`, percent);
             }
             clearQuestionMark(question.container);
             const resolved = resolveAnswer(question);
@@ -596,14 +680,15 @@
 
             try {
                 let result = { ok: false, reason: 'unsupported field type' };
+                const selectors = getSelectors();
                 if (question.type === 'short_text' || question.type === 'email' || question.type === 'phone') {
-                    const input = question.container.querySelector(SELECTORS.textInput);
+                    const input = findQuestionElement(question.container, selectors.textInput);
                     result = input ? { ok: fillTextElement(input, answer) } : { ok: false, reason: 'text input not found' };
                 } else if (question.type === 'paragraph') {
-                    const textarea = question.container.querySelector(SELECTORS.textarea);
+                    const textarea = findQuestionElement(question.container, selectors.textarea);
                     result = textarea ? { ok: fillTextElement(textarea, answer) } : { ok: false, reason: 'textarea not found' };
                 } else if (question.type === 'date') {
-                    const input = question.container.querySelector(SELECTORS.dateInput) || question.container.querySelector(SELECTORS.textInput);
+                    const input = findQuestionElement(question.container, selectors.dateInput) || findQuestionElement(question.container, selectors.textInput);
                     result = input ? { ok: fillTextElement(input, normalizeDateValue(answer)) } : { ok: false, reason: 'date input not found' };
                 } else if (question.type === 'radio') {
                     result = fillRadio(question.container, answer);
@@ -628,10 +713,25 @@
         }
 
         renderReport(report);
-        setStatus(`Fill complete: ${report.filled.length} filled, ${report.manualRequired.length} manual, ${report.unresolved.length} unresolved. Review before submitting manually.`, report.unresolved.length || report.errors.length ? 'warn' : 'ok');
+        const providerIssue = providerIssueMessage(options.routing);
+        const completionSummary = `${report.filled.length} filled, ${report.manualRequired.length} manual, ${report.unresolved.length} unresolved`;
+        if (providerIssue) {
+            setStatus(`${providerIssue} Result: ${completionSummary}. Retry Fill form later or complete the marked fields manually.`, 'warn');
+        } else {
+            setStatus(`Fill complete: ${completionSummary}. Review before submitting manually.`, report.unresolved.length || report.errors.length ? 'warn' : 'ok');
+        }
         if (options.progress) {
-            const level = report.unresolved.length || report.errors.length ? 'warn' : 'ok';
-            finishProgress(`Complete: ${report.filled.length} filled, ${report.manualRequired.length} manual, ${report.unresolved.length} unresolved.`, level);
+            if (providerIssue) {
+                finishProgress(
+                    `${providerIssue} Result: ${completionSummary}. Retry later or fill the marked questions manually.`,
+                    'warn',
+                    false,
+                    'AI unavailable - local answers only'
+                );
+            } else {
+                const level = report.unresolved.length || report.errors.length ? 'warn' : 'ok';
+                finishProgress(`Complete: ${completionSummary}.`, level);
+            }
         }
     }
 
@@ -680,6 +780,9 @@
         const failedCount = Array.isArray(response.apiQuestionsFailed) ? response.apiQuestionsFailed.length : Number(response.apiQuestionCount) || 0;
         if (rawStatus === 'invalid_response') {
             return `${provider} returned an invalid response. Filled local answers only; ${failedCount} API question(s) need manual review this time.`;
+        }
+        if (rawStatus === 'missing_key') {
+            return `Gemini key is missing. Filled local answers only; add the key in Open panel before retrying ${failedCount} AI question(s).`;
         }
         const status = rawStatus ? ` HTTP ${rawStatus}` : '';
         return `${provider}${status} is unavailable or overloaded. Filled local answers only; ${failedCount} API question(s) need manual review this time.`;
@@ -757,10 +860,10 @@
         activeProgress.bar.style.width = `${safePercent}%`;
     }
 
-    function finishProgress(detail, level = 'ok', autoHide = true) {
+    function finishProgress(detail, level = 'ok', autoHide = true, title = '') {
         if (!activeProgress) return;
         activeProgress.container.dataset.level = level;
-        activeProgress.title.textContent = level === 'error' ? 'Form filling stopped' : 'Form filling complete';
+        activeProgress.title.textContent = title || (level === 'error' ? 'Form filling stopped' : 'Form filling complete');
         activeProgress.detail.textContent = detail;
         activeProgress.bar.style.width = '100%';
         if (autoHide) {
